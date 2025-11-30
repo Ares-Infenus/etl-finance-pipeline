@@ -169,3 +169,11 @@ This project is inspired by professional workflows found in quantitative funds, 
 More updates and modules will be released progressively.
 
 ---
+## Documentacion Inicial
+
+1. `python -m venv .venv`
+2. Activar: `source .venv/bin/activate`
+3. `pip install -r requirements.txt` (o `poetry install`)
+4. `pre-commit install`
+5. `pre-commit run --all-files`
+6. `make test` (opcional)
