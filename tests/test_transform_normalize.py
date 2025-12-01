@@ -14,6 +14,20 @@ def load_csv(path: str) -> DataFrame:
     return pd.read_csv(path)
 
 
+def test_normalization_report_exists() -> None:
+    df = load_csv("tests/data/transform_samples/sample_ok.csv")
+    res = normalize_df(
+        df,
+        columns_map=cfg["schema"]["columns_map"],
+        required_columns=cfg["schema"]["required_columns"],
+        source_tz=cfg["timezone"].get("source_default"),
+        target_tz=cfg["timezone"]["target"],
+    )
+    assert "normalization_report" in res.attrs
+    rpt = res.attrs["normalization_report"]
+    assert "columns" in rpt and "dtypes" in rpt
+
+
 def test_normalize_ok(tmp_path: Path) -> None:
     df: DataFrame = load_csv("tests/data/transform_samples/sample_ok.csv")
     res: DataFrame = normalize_df(
