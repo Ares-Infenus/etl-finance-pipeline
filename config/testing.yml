@@ -1,0 +1,15 @@
+io:
+  raw_path: "tests/data/raw"
+  processed_path: "tests/data/processed"
+parquet:
+  compression: "zstd"
+schema:
+  columns_map:
+    TIMESTAMP: ["ts"]
+    OPEN: ["o"]
+    HIGH: ["h"]
+    LOW: ["l"]
+    CLOSE: ["c"]
+  required_columns: ["TIMESTAMP","OPEN","HIGH","LOW","CLOSE"]
+timezone:
+  target: "UTC"

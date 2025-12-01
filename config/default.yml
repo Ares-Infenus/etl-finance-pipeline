@@ -1,0 +1,59 @@
+# config/default.yml
+# Config central para el pipeline ETL financiero.
+
+io:
+  # Rutas (puedes usar variables de entorno en el loader si quieres)
+  raw_path: "data/raw"            # carpeta donde llegan archivos crudos
+  processed_path: "data/processed" # salida final (parquets, particiones)
+  reports_path: "data/reports"    # informes de calidad
+  quarantine_path: "data/quarantine" # archivos corruptos
+
+parquet:
+  file_format: "parquet"
+  compression: "zstd"   # zstd recomendado
+  engine: "pyarrow"
+  partition_cols: ["symbol", "year"]  # ejemplo (opcional)
+  row_group_size: 65536   # sugerencia para pyarrow (filas por row-group)
+
+schema:
+  # columns_map: keys CANÓNICAS -> lista de variantes que podrías recibir
+  # El loader de normalización usará esto para renombrar columnas automáticamente
+  columns_map:
+    TIMESTAMP: ["timestamp", "date", "datetime", "time", "ts"]
+    OPEN: ["open", "Open", "o", "price_open", "askopen", "bidopen"]
+    HIGH: ["high", "High", "h", "price_high"]
+    LOW: ["low", "Low", "l", "price_low"]
+    CLOSE: ["close", "Close", "c", "price_close"]
+    VOLUME: ["volume", "vol", "tickvol", "Volume"]
+    BID: ["bid", "Bid"]
+    ASK: ["ask", "Ask"]
+  # Opcional: columnas obligatorias mínimas
+  required_columns: ["TIMESTAMP", "OPEN", "HIGH", "LOW", "CLOSE"]
+
+timezone:
+  # Zona objetivo para todo el pipeline — por defecto UTC recomendado
+  target: "UTC"
+  # Si no llega tz en el source, puedes declarar el tz por defecto que asumas
+  source_default: "America/Bogota"  # ejemplo — reemplaza si tus proveedores usan otra
+
+resample:
+  # timeframes a generar (pandas offset alias)
+  timeframes:
+    - "1T"   # 1 minuto
+    - "5T"   # 5 minutos
+    - "15T"
+    - "1H"
+  # reglas y políticas de relleno para gaps (opcional)
+  gap_policy:
+    short_gap_minutes: 5   # hasta este umbral se puede ffill (ejemplo)
+    use_ffill_for: ["VOLUME"]  # columnas a ffill
+    interpolate_prices: true
+
+export:
+  write_mode: "overwrite"  # or "append"
+  save_reports: true
+  report_format: "json"
+
+logging:
+  level: "INFO"
+  log_dir: "logs"

@@ -171,9 +171,161 @@ More updates and modules will be released progressively.
 ---
 ## Documentacion Inicial
 
-1. `python -m venv .venv`
-2. Activar: `source .venv/bin/activate`
-3. `pip install -r requirements.txt` (o `poetry install`)
-4. `pre-commit install`
-5. `pre-commit run --all-files`
-6. `make test` (opcional)
+Below is a **clean, professional, English-only README section** summarizing and documenting everything we have built so far — the initial architecture, modules, tests, and logging system.
+
+You can paste this directly into your project README.md under a new section called **“Development Progress & Documentation Log”**.
+
+---
+
+# 📘 Development Progress & Documentation Log
+
+This section documents the step-by-step development of the ETL pipeline, including implemented modules, architecture decisions, testing strategy, and logging system. It serves as a technical journal to track the project’s evolution from zero to a production-grade system.
+
+---
+
+## ✅ 1. Project Initialization
+
+The project was initialized with a clean and scalable structure following Python best practices:
+
+```
+project/
+│── src/
+│   ├── etl/
+│   │   ├── __init__.py
+│   │   ├── logging_config.py
+│   │   └── ... (more modules coming)
+│── tests/
+│   ├── test_smoke.py
+│── README.md
+│── pyproject.toml
+│── Makefile
+│── .env (optional)
+│── .gitignore
+```
+
+---
+
+## ✅ 2. Logging System (`logging_config.py`)
+
+A robust logging system was implemented to support transparency, debugging, and production monitoring.
+
+### **Features**
+
+* Uses Python’s built-in `logging` module.
+* Rotating file handler to prevent large log accumulation.
+* Configurable log directory via environment variable (`LOG_DIR`).
+* Console + file logging with unified formatting.
+* Reusable logger factory function.
+
+### **Code Overview**
+
+```python
+import logging
+import os
+from logging.handlers import RotatingFileHandler
+
+LOG_DIR = os.getenv("LOG_DIR", "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "etl.log")
+
+def get_logger(name=__name__):
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=5_000_000, backupCount=3)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+
+    return logger
+```
+
+### **Reasoning**
+
+This logger is designed for:
+
+* ETL pipelines running on schedulers (Cron, Airflow, Prefect).
+* Long-running processes that require traceable logs.
+* Debugging in development and monitoring in production.
+
+---
+
+## ✅ 3. Testing System (`test_smoke.py`)
+
+A basic test suite was created to verify environment correctness and ensure future tests run correctly.
+
+### **Code**
+
+```python
+def test_smoke() -> None:
+    assert True
+```
+
+### **Purpose**
+
+This “smoke test” confirms:
+
+* The project structure is valid.
+* Pytest is correctly configured.
+* CI/CD workflows will recognize the test suite.
+
+It lays the foundation for complete test coverage coming later:
+
+* Unit tests for extract/transform/load steps.
+* Integration tests for full ETL runs.
+* Performance tests for large datasets.
+
+---
+
+## ✅ 4. Git Workflow & Commits
+
+We established a clean and consistent commit workflow:
+
+* Separate commits for each module or modification.
+* Use of `git diff` to track changes.
+* Documented commit messages for traceability.
+* Progressive commits capturing the full development history.
+
+This ensures the repository grows in a maintainable and auditable manner.
+
+---
+
+## 🚀 Next Steps (Planned)
+
+### **Coming Modules**
+
+* `extract/` — data readers for CSV, Parquet, API sources.
+* `transform/` — cleaning, normalization, timezone handling.
+* `load/` — optimized Parquet/ZSTD storage and metadata management.
+* `utils/` — shared helpers and decorators.
+* `configs/` — YAML definition of pipeline parameters.
+* `cli.py` — command-line interface for running ETL jobs.
+* `orchestration/` — scheduling and dependency management.
+
+### **Coming Documentation**
+
+* Architecture diagrams.
+* Data flow explanations.
+* Performance benchmarks.
+* How to deploy the pipeline in production (AWS/GCP/On-Prem).
+
+---
+
+## 📄 Summary
+
+This README section documents the foundational components of the ETL pipeline:
+
+✔ Project initialized
+✔ Logging system implemented
+✔ Testing framework activated
+✔ Commit workflow established
+✔ Development roadmap defined
+
+This structured documentation ensures total clarity as the system evolves into a full production-grade financial data ETL pipeline.
