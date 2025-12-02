@@ -33,6 +33,16 @@ class SchemaConfig(BaseModel):
 class TimezoneConfig(BaseModel):
     target: str = "UTC"
     source_default: Optional[str] = None
+    # policy_if_na: behavior when timestamps are tz-naive and no source_tz is provided
+    # allowed: "assume_utc", "require_source", "mark_needs_review"
+    policy_if_na: str = "assume_utc"
+
+    @classmethod
+    def validate_policy(cls, v: str) -> str:
+        allowed = {"assume_utc", "require_source", "mark_needs_review"}
+        if v not in allowed:
+            raise ValueError(f"policy_if_na must be one of {allowed}")
+        return v
 
 
 class ResampleConfig(BaseModel):

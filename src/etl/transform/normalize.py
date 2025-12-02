@@ -1,12 +1,15 @@
 # src/etl/transform/normalize.py
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from ..utils.logger import get_logger
 
+logger = logging.getLogger(__name__)
 logger = get_logger("Normalize")
 
 PROTECTED = {"symbol", "ticker", "instrument", "pair"}
@@ -109,60 +112,115 @@ def enforce_dtypes(df: pd.DataFrame, required_cols: List[str]) -> Tuple[pd.DataF
 
 
 def normalize_datetime(
-    df: pd.DataFrame, source_tz: str | None, target_tz: str
+    df: pd.DataFrame,
+    source_tz: str | None,
+    target_tz: str = "UTC",
 ) -> Tuple[pd.DataFrame, Dict]:
     """
-    Ensure datetime column is index and timezone-aware.
-    Returns (df_copy, report)
-    report includes: datetime_col, coerced_rows (NaT), tz_action (localized/assumed), original_tzinfo
-    """
-    df = df.copy()
-    report: Dict = {"datetime_col": None, "coerced_rows": 0, "tz_action": None, "original_tz": None}
+    Normaliza la columna datetime del dataframe a timezone-aware y convierte a target_tz.
 
+    Política:
+      - Si el índice es tz-aware: solo tz_convert(target_tz).
+      - Si tz-naive:
+          * si source_tz provisto -> tz_localize(source_tz, ambiguous="NaT", nonexistent="shift_forward")
+          * si source_tz no provisto -> tz_localize("UTC", ambiguous="NaT", nonexistent="shift_forward")
+            y report["needs_review"]=True
+
+    Devuelve (df_normalizado, report) donde report contiene keys:
+      datetime_col, coerced_rows, tz_action, original_tz, final_tz,
+      ambiguous_count, needs_review
+    """
+    # defensive copy
+    df = df.copy()
+    report: Dict = {
+        "datetime_col": None,
+        "coerced_rows": 0,
+        "tz_action": None,
+        "original_tz": None,
+        "final_tz": None,
+        "ambiguous_count": 0,
+        "needs_review": False,
+    }
+
+    # 1) detectar columna datetime (prioridad a columnas explícitas)
     datetime_col = None
     for col in df.columns:
-        if col.lower() in ["datetime", "timestamp", "time"]:
+        if col.lower() in {"datetime", "timestamp", "time"}:
             datetime_col = col
             break
-
     if datetime_col is None:
-        raise ValueError("No datetime column found.")
-
+        raise ValueError("No datetime column found in dataframe.")
     report["datetime_col"] = datetime_col
-    # coerce to datetime
-    coerced = pd.to_datetime(df[datetime_col], errors="coerce")
-    report["coerced_rows"] = int(coerced.isna().sum())
-    if report["coerced_rows"] > 0:
+
+    # 2) coerción a datetime (sin forzar utc)
+    coerced = pd.to_datetime(df[datetime_col], errors="coerce", utc=False)
+    coerced_count = int(coerced.isna().sum())
+    report["coerced_rows"] = coerced_count
+    if coerced_count > 0:
         logger.warning(
-            f"{report['coerced_rows']} rows in {datetime_col} coerced to NaT (pd.to_datetime)."
+            "%d rows in %s coerced to NaT by pd.to_datetime(..., errors='coerce').",
+            coerced_count,
+            datetime_col,
         )
 
     df[datetime_col] = coerced
     df = df.set_index(datetime_col)
 
-    # TZ Handling
+    # 3) timezone handling
     orig_tz = getattr(df.index, "tz", None)
     report["original_tz"] = str(orig_tz)
+
     if df.index.tz is None:
-        if source_tz is None:
-            logger.warning("Timestamp is tz-naive. Assuming UTC as source.")
-            df.index = df.index.tz_localize("UTC")
-            report["tz_action"] = "localized_to_UTC_assumed"
+        # tz-naive
+        if source_tz:
+            # validar source_tz
+            try:
+                ZoneInfo(source_tz)
+            except Exception as e:
+                logger.exception("Invalid source_tz '%s': %s", source_tz, e)
+                raise
+            try:
+                df.index = df.index.tz_localize(
+                    source_tz, ambiguous="NaT", nonexistent="shift_forward"
+                )
+                report["tz_action"] = f"localized_to_{source_tz}"
+            except Exception as e:
+                logger.exception("Failed to localize to %s: %s", source_tz, e)
+                raise
         else:
-            df.index = df.index.tz_localize(source_tz)
-            report["tz_action"] = f"localized_to_{source_tz}"
+            # política: asumir UTC pero marcar para revisión
+            logger.warning(
+                "Timestamps tz-naive and no source_tz provided — assuming UTC and marking needs_review."
+            )
+            df.index = df.index.tz_localize("UTC", ambiguous="NaT", nonexistent="shift_forward")
+            report["tz_action"] = "localized_to_UTC_assumed"
+            report["needs_review"] = True
     else:
         report["tz_action"] = "already_tzaware"
 
-    # finally convert to target
+    # 4) contar ambiguous / NaT introducidos por la localización
+    try:
+        ambiguous_count = int(df.index.isna().sum())
+        report["ambiguous_count"] = ambiguous_count
+        if ambiguous_count > 0:
+            logger.warning(
+                "%d timestamps became NaT after localization (ambiguous/nonexistent). Marking needs_review.",
+                ambiguous_count,
+            )
+            report["needs_review"] = True
+    except Exception:
+        # fallback defensivo
+        pass
+
+    # 5) convertir a target tz
     try:
         df.index = df.index.tz_convert(target_tz)
         report["final_tz"] = target_tz
     except Exception as e:
-        logger.error(f"Failed to convert timezone to {target_tz}: {e}")
+        logger.exception("Failed to convert timezone to %s: %s", target_tz, e)
         raise
 
-    logger.info(f"Datetime localized to {target_tz}")
+    logger.info("Datetime column '%s' normalized to tz %s", datetime_col, report["final_tz"])
     return df, report
 
 

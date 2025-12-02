@@ -179,7 +179,24 @@ def process_dataframe(
         )
 
         # ensure sorted
-        normalized = normalized.sort_index()
+        # === Timezone post-check ===
+        try:
+            tz = normalized.index.tz
+            if tz is None:
+                logger.error(
+                    f"[TZ-ERROR] Normalized DF for {basename} is tz-naive AFTER normalization."
+                )
+            else:
+                tz_str = str(tz)
+                if tz_str != "UTC" and tz_str.lower() != "utc":
+                    logger.error(
+                        f"[TZ-ERROR] Normalized DF for {basename} has tz={tz_str}, expected UTC."
+                    )
+                else:
+                    logger.info("[TZ-CHECK] OK — Index timezone is UTC.")
+        except Exception as e:
+            logger.error(f"[TZ-CHECK] Failed to verify timezone for {basename}: {e}")
+        # === END TZ CHECK ===
 
         # generate and save data quality report
         report = data_quality_report(normalized)
@@ -241,15 +258,20 @@ def main(config_path: str, dry_run: bool = True) -> None:
     extractor = Extractor(raw_path)
 
     logger.info("Starting extraction...")
-    dfs = extractor.load_all()
+    # Extractor ahora devuelve una lista de dicts: {"df","meta","filename"}
+    items = extractor.load_all()
     logger.info(
-        f"Extraction finished. {len(dfs)} DataFrames loaded (some files may have been quarantined)."
+        f"Extraction finished. {len(items)} files loaded (some files may have been quarantined)."
     )
 
     # Process each DataFrame
-    for i, df in enumerate(dfs):
+    for i, item in enumerate(items):
+        df = item["df"]
+        meta = item.get("meta", {})
+
         basename = f"input_{i}"
-        # try to find a symbol/name column to better name outputs
+
+        # try to find a symbol/name column
         for candidate in ("SYMBOL", "symbol", "TICKER", "ticker"):
             if candidate in df.columns:
                 try:
@@ -294,10 +316,15 @@ def main(config_path: str, dry_run: bool = True) -> None:
             continue
 
         # actual processing
+        # TIMEZONE PRIORITY
+        config_source_default = cfg["timezone"].get("source_default")
+        meta_source_tz = meta.get("source_tz")
+        source_to_use = meta_source_tz or config_source_default
+
         process_dataframe(
             df,
             cfg,
-            source_tz=cfg["timezone"].get("source_default"),
+            source_tz=source_to_use,
             basename=basename,
             out_dir=out_dir_for_df,
         )

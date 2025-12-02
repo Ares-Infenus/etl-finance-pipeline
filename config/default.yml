@@ -31,10 +31,13 @@ schema:
   required_columns: ["TIMESTAMP", "OPEN", "HIGH", "LOW", "CLOSE"]
 
 timezone:
-  # Zona objetivo para todo el pipeline — por defecto UTC recomendado
   target: "UTC"
-  # Si no llega tz en el source, puedes declarar el tz por defecto que asumas
-  source_default: "America/Bogota"  # ejemplo — reemplaza si tus proveedores usan otra
+  source_default: null
+  # Política si se encuentra timestamps tz-naive y no hay source_default:
+  #   - assume_utc: localizar a UTC y marcar needs_review (default)
+  #   - require_source: lanzar error y forzar metadata/source_tz
+  #   - mark_needs_review: no cambiar la tz (queda tz-naive) pero marcar needs_review
+  policy_if_na: "assume_utc"
 
 resample:
   # timeframes a generar (pandas offset alias)
