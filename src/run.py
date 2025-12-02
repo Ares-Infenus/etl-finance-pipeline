@@ -9,11 +9,12 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
 from src.etl.extract.extractor import Extractor
+from src.etl.load.exporter import append_export_log, write_parquet_with_metadata
 from src.etl.transform.normalize import normalize_df
 from src.etl.utils.config_loader import get_config
 from src.etl.utils.logger import get_logger
@@ -90,54 +91,7 @@ def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     return res
 
 
-def write_parquet(
-    df: pd.DataFrame,
-    out_path: Path,
-    compression: str = "zstd",
-    engine: str = "pyarrow",
-    partition_cols: Optional[List[str]] = None,
-) -> None:
-    """
-    Write dataframe to parquet but map partition_cols case-insensitively
-    to actual dataframe columns. Warn and drop any not-found partition cols.
-    """
-    ensure_dir(out_path.parent)
-    # map provided partition_cols (case-insensitive) to actual df columns
-    mapped_partitions: Optional[List[str]] = None
-    if partition_cols:
-        # build lookup: lowercase -> actual column
-        col_lookup = {c.lower(): c for c in df.columns}
-        mapped = []
-        for pc in partition_cols:
-            actual = col_lookup.get(pc.lower())
-            if actual:
-                mapped.append(actual)
-            else:
-                logger.warning(f"Partition column requested but not found in df: '{pc}' (skipping)")
-        mapped_partitions = mapped if mapped else None
-
-    to_write = df.reset_index()
-    # NOTE: pandas will raise if partition_cols contains names not present in to_write.columns,
-    # so we re-evaluate mapped_partitions against reset_index() columns
-    if mapped_partitions:
-        # ensure mapped_partitions exist in to_write
-        mapped_partitions = [c for c in mapped_partitions if c in to_write.columns]
-        if not mapped_partitions:
-            mapped_partitions = None
-
-    to_write.to_parquet(
-        out_path,
-        engine=engine,
-        compression=compression,
-        index=False,
-        partition_cols=mapped_partitions,
-    )
-    if mapped_partitions:
-        logger.info(
-            f"Wrote parquet: {out_path} (compression={compression}, partition_cols={mapped_partitions})"
-        )
-    else:
-        logger.info(f"Wrote parquet: {out_path} (compression={compression})")
+# NOTE: write_parquet logic replaced by specialized exporter.write_parquet_with_metadata
 
 
 def data_quality_report(df: pd.DataFrame) -> Dict:
@@ -170,13 +124,33 @@ def process_dataframe(
         logger.info(f"Processing input: {basename}")
 
         # Normalize column names & types + timezone + dedupe
-        normalized = normalize_df(
-            df,
-            columns_map=cfg["schema"]["columns_map"],
-            required_columns=cfg["schema"]["required_columns"],
-            source_tz=source_tz,
-            target_tz=cfg["timezone"]["target"],
-        )
+        normalized = None
+        try:
+            normalized = normalize_df(
+                df,
+                columns_map=cfg["schema"]["columns_map"],
+                required_columns=cfg["schema"]["required_columns"],
+                source_tz=source_tz,
+                target_tz=cfg["timezone"]["target"],
+            )
+        except Exception as e:
+            # Log full exception and re-raise so caller knows normalization failed.
+            logger.exception("Normalization failed for input (basename=%s): %s", basename, e)
+            raise
+
+        # Ensure symbol is recorded in normalization attrs for exporter metadata
+        try:
+            if "SYMBOL" in normalized.columns:
+                # prefer existing SYMBOL column value (first non-null)
+                sym_val = normalized["SYMBOL"].dropna().astype(str).iloc[0]
+                normalized.attrs["symbol"] = str(sym_val).upper()
+            else:
+                # fallback: use previously inferred symbol from original df if present
+                if "SYMBOL" in df.columns:
+                    normalized.attrs["symbol"] = str(df["SYMBOL"].iloc[0]).upper()
+        except Exception:
+            # non-fatal; exporter can handle missing symbol
+            pass
 
         # ensure sorted
         # === Timezone post-check ===
@@ -184,21 +158,21 @@ def process_dataframe(
             tz = normalized.index.tz
             if tz is None:
                 logger.error(
-                    f"[TZ-ERROR] Normalized DF for {basename} is tz-naive AFTER normalization."
+                    "[TZ-ERROR] Normalized DF for %s is tz-naive AFTER normalization.", basename
                 )
             else:
                 tz_str = str(tz)
                 if tz_str != "UTC" and tz_str.lower() != "utc":
                     logger.error(
-                        f"[TZ-ERROR] Normalized DF for {basename} has tz={tz_str}, expected UTC."
+                        "[TZ-ERROR] Normalized DF for %s has tz=%s, expected UTC.", basename, tz_str
                     )
                 else:
                     logger.info("[TZ-CHECK] OK — Index timezone is UTC.")
         except Exception as e:
-            logger.error(f"[TZ-CHECK] Failed to verify timezone for {basename}: {e}")
+            logger.exception("[TZ-CHECK] Exception while checking timezone for %s: %s", basename, e)
         # === END TZ CHECK ===
 
-        # generate and save data quality report
+        # generate and save data quality report (sidecar)
         report = data_quality_report(normalized)
         report_path = out_dir / f"{basename}_quality_report.json"
         ensure_dir(report_path.parent)
@@ -206,7 +180,7 @@ def process_dataframe(
             json.dump(report, fh, indent=2, ensure_ascii=False)
         logger.info(f"Wrote quality report: {report_path}")
 
-        # Resample and write for each timeframe in config
+        # Resample and write for each timeframe in config using exporter
         resample_cfg = cfg.get("resample") or {}
         timeframes = resample_cfg.get("timeframes", [])
         parquet_cfg = cfg.get("parquet", {})
@@ -214,15 +188,34 @@ def process_dataframe(
         engine = parquet_cfg.get("engine", "pyarrow")
         partition_cols = parquet_cfg.get("partition_cols")
 
+        export_log_dir = Path(cfg["io"].get("reports_path", "data/reports")) / "exports"
+        ensure_dir(export_log_dir)
+
         if not timeframes:
             out_file = out_dir / f"{basename}_raw.parquet"
-            write_parquet(
-                normalized,
-                out_file,
-                compression=compression,
-                engine=engine,
-                partition_cols=partition_cols,
-            )
+            try:
+                meta = {
+                    "symbol": normalized.attrs.get("symbol", None),
+                    "timeframe": "raw",
+                    "source_basename": basename,
+                }
+                export_report = write_parquet_with_metadata(
+                    normalized,
+                    out_file,
+                    compression=compression,
+                    engine=engine,
+                    partition_cols=partition_cols,
+                    metadata=meta,
+                )
+                export_entry = {
+                    "basename": basename,
+                    "timeframe": "raw",
+                    "out_path": str(out_file),
+                    "export_report": export_report,
+                }
+                append_export_log(export_log_dir, export_entry)
+            except Exception as e:
+                logger.error("Export failed for %s: %s", out_file, e)
         else:
             for tf in timeframes:
                 try:
@@ -230,13 +223,28 @@ def process_dataframe(
                     # name timeframes nicely (1T -> 1m)
                     tf_suffix = tf.replace("T", "m").lower()
                     out_file = out_dir / f"{basename}_{tf_suffix}.parquet"
-                    write_parquet(
+
+                    meta = {
+                        "symbol": normalized.attrs.get("symbol", None),
+                        "timeframe": tf_suffix,
+                        "source_basename": basename,
+                    }
+                    export_report = write_parquet_with_metadata(
                         res,
                         out_file,
                         compression=compression,
                         engine=engine,
                         partition_cols=partition_cols,
+                        metadata=meta,
                     )
+                    export_entry = {
+                        "basename": basename,
+                        "timeframe": tf_suffix,
+                        "out_path": str(out_file),
+                        "export_report": export_report,
+                    }
+                    append_export_log(export_log_dir, export_entry)
+
                     logger.info(f"Resampled to {tf}, rows={len(res)} -> wrote {out_file}")
                 except Exception as e:
                     logger.error(f"Failed resample for timeframe {tf}: {e}")
