@@ -15,6 +15,7 @@ import pandas as pd
 
 from src.etl.extract.extractor import Extractor
 from src.etl.load.exporter import append_export_log, write_parquet_with_metadata
+from src.etl.transform.gaps import repair_gaps
 from src.etl.transform.normalize import normalize_df
 from src.etl.utils.config_loader import get_config
 from src.etl.utils.logger import get_logger
@@ -194,6 +195,22 @@ def process_dataframe(
         if not timeframes:
             out_file = out_dir / f"{basename}_raw.parquet"
             try:
+                # Run gap repair on raw if configured
+                gap_policy = resample_cfg.get("gap_policy", {}) or {}
+                if gap_policy:
+                    try:
+                        repaired, gap_report = repair_gaps(
+                            normalized,
+                            rule="1T",
+                            use_ffill_for=gap_policy.get("use_ffill_for"),
+                            interpolate_prices=gap_policy.get("interpolate_prices", True),
+                            short_gap_minutes=gap_policy.get("short_gap_minutes", 5),
+                        )
+                        # attach report and replace normalized for export
+                        repaired.attrs["gap_report"] = gap_report
+                        normalized = repaired
+                    except Exception as e:
+                        logger.exception("Gap repair failed on raw dataframe: %s", e)
                 meta = {
                     "symbol": normalized.attrs.get("symbol", None),
                     "timeframe": "raw",
@@ -219,7 +236,26 @@ def process_dataframe(
         else:
             for tf in timeframes:
                 try:
-                    res = resample_ohlc(normalized, tf)
+                    # Before resample: attempt gap repair at the target frequency if gap policy provided
+                    res = normalized
+                    gap_policy = resample_cfg.get("gap_policy", {}) or {}
+                    try:
+                        if gap_policy:
+                            repaired, gap_report = repair_gaps(
+                                normalized,
+                                rule=tf,
+                                use_ffill_for=gap_policy.get("use_ffill_for"),
+                                interpolate_prices=gap_policy.get("interpolate_prices", True),
+                                short_gap_minutes=gap_policy.get("short_gap_minutes", 5),
+                            )
+                            # attach gap report to normalized attrs for exporter metadata
+                            repaired.attrs["gap_report"] = gap_report
+                            res = repaired
+                    except Exception as e:
+                        logger.exception("Gap repair failed for timeframe %s: %s", tf, e)
+
+                    # Now perform resample on the (possibly repaired) dataframe
+                    res = resample_ohlc(res, tf)
                     # name timeframes nicely (1T -> 1m)
                     tf_suffix = tf.replace("T", "m").lower()
                     out_file = out_dir / f"{basename}_{tf_suffix}.parquet"
