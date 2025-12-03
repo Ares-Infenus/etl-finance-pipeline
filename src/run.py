@@ -17,6 +17,7 @@ from src.etl.extract.extractor import Extractor
 from src.etl.load.exporter import append_export_log, write_parquet_with_metadata
 from src.etl.transform.gaps import repair_gaps
 from src.etl.transform.normalize import normalize_df
+from src.etl.transform.resample import resample_ohlc
 from src.etl.utils.config_loader import get_config
 from src.etl.utils.logger import get_logger
 
@@ -48,48 +49,9 @@ def infer_symbol_from_df(df: pd.DataFrame, fallback: str) -> str:
     return str(fallback).upper()
 
 
-def resample_ohlc(df: pd.DataFrame, rule: str) -> pd.DataFrame:
-    """
-    Resample an OHLCV-like dataframe to given frequency.
-    Expected columns: OPEN, HIGH, LOW, CLOSE, (optional) VOLUME / TICKVOL / SPREAD / SYMBOL
-    """
-    agg_map: Dict[str, str] = {}
-    if "OPEN" in df.columns:
-        agg_map["OPEN"] = "first"
-    if "HIGH" in df.columns:
-        agg_map["HIGH"] = "max"
-    if "LOW" in df.columns:
-        agg_map["LOW"] = "min"
-    if "CLOSE" in df.columns:
-        agg_map["CLOSE"] = "last"
-
-    # volume-like columns summed
-    for vol_col in ("VOLUME", "TICKVOL", "VOL"):
-        if vol_col in df.columns:
-            agg_map[vol_col] = "sum"
-
-    # keep symbol by last (if present)
-    if "SYMBOL" in df.columns:
-        agg_map["SYMBOL"] = "last"
-
-    # fallback: if no OHLC, return original
-    if not agg_map:
-        logger.warning("No OHLC columns found for resample. Returning original df.")
-        return df
-
-    # Perform resample
-    res = df.resample(rule).agg(agg_map)
-
-    # For additional numeric columns not covered, try mean
-    for col in df.columns:
-        if col not in res.columns and pd.api.types.is_numeric_dtype(df[col]) and col not in agg_map:
-            res[col] = df[col].resample(rule).mean()
-
-    # Drop intervals without CLOSE (incomplete)
-    if "CLOSE" in res.columns:
-        res = res[~res["CLOSE"].isna()]
-
-    return res
+### NOTE:
+# Local resample_ohlc removed in favor of:
+# from src.etl.transform.resample import resample_ohlc
 
 
 # NOTE: write_parquet logic replaced by specialized exporter.write_parquet_with_metadata
@@ -255,7 +217,16 @@ def process_dataframe(
                         logger.exception("Gap repair failed for timeframe %s: %s", tf, e)
 
                     # Now perform resample on the (possibly repaired) dataframe
-                    res = resample_ohlc(res, tf)
+                    res = resample_ohlc(
+                        res,
+                        rule=tf,
+                    )
+
+                    # attach metadata for exporter
+                    res.attrs["symbol"] = normalized.attrs.get("symbol")
+                    res.attrs["timeframe"] = tf
+                    if "gap_report" in res.attrs:
+                        pass  # already set during gap repair
                     # name timeframes nicely (1T -> 1m)
                     tf_suffix = tf.replace("T", "m").lower()
                     out_file = out_dir / f"{basename}_{tf_suffix}.parquet"
