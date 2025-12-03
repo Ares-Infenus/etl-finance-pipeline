@@ -7,7 +7,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -20,6 +19,7 @@ from src.etl.transform.normalize import normalize_df
 from src.etl.transform.resample import resample_ohlc
 from src.etl.utils.config_loader import get_config
 from src.etl.utils.logger import get_logger
+from src.etl.utils.reporting import data_quality_report, save_report
 
 logger = get_logger("ETL_Run")
 
@@ -55,18 +55,6 @@ def infer_symbol_from_df(df: pd.DataFrame, fallback: str) -> str:
 
 
 # NOTE: write_parquet logic replaced by specialized exporter.write_parquet_with_metadata
-
-
-def data_quality_report(df: pd.DataFrame) -> Dict:
-    d = {
-        "rows": int(len(df)),
-        "start": str(df.index.min()) if len(df) > 0 else None,
-        "end": str(df.index.max()) if len(df) > 0 else None,
-        "columns": list(df.columns),
-        "nans_per_column": {c: int(df[c].isna().sum()) for c in df.columns},
-        "dups_timestamps": int(df.index.duplicated().sum()),
-    }
-    return d
 
 
 def process_dataframe(
@@ -135,13 +123,18 @@ def process_dataframe(
             logger.exception("[TZ-CHECK] Exception while checking timezone for %s: %s", basename, e)
         # === END TZ CHECK ===
 
-        # generate and save data quality report (sidecar)
-        report = data_quality_report(normalized)
-        report_path = out_dir / f"{basename}_quality_report.json"
+        # === QA REPORT (FASE 10) ===
+        qa_report = data_quality_report(
+            normalized,
+            compute_indicators=True,
+            sma_windows=(10, 50),
+        )
+
+        report_path = out_dir / "report.json"
         ensure_dir(report_path.parent)
-        with open(report_path, "w", encoding="utf-8") as fh:
-            json.dump(report, fh, indent=2, ensure_ascii=False)
-        logger.info(f"Wrote quality report: {report_path}")
+        save_report(qa_report, report_path)
+        logger.info(f"[QA] Wrote advanced quality report: {report_path}")
+        # =============================
 
         # Resample and write for each timeframe in config using exporter
         resample_cfg = cfg.get("resample") or {}

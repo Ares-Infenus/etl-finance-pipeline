@@ -147,16 +147,8 @@ def repair_gaps(
     # reindex
     reindexed = df.reindex(expected)
 
+    # === APPLY FFILL FIRST for specified columns ===
     filled_counts: Dict[str, int] = {}
-
-    # apply interpolation on price columns
-    price_cols = [c for c in ("OPEN", "HIGH", "LOW", "CLOSE") if c in reindexed.columns]
-    if interpolate_prices and price_cols:
-        reindexed[price_cols] = reindexed[price_cols].interpolate(
-            method="linear", limit_direction="both"
-        )
-
-    # apply ffill for specified columns
     if use_ffill_for:
         for c in use_ffill_for:
             if c in reindexed.columns:
@@ -165,6 +157,17 @@ def repair_gaps(
                 after = int(reindexed[c].isna().sum())
                 filled_counts[c] = before - after
 
+    # === APPLY INTERPOLATION only to price columns NOT in use_ffill_for ===
+    price_cols = [c for c in ("OPEN", "HIGH", "LOW", "CLOSE") if c in reindexed.columns]
+
+    # exclude columns handled by ffill
+    if use_ffill_for:
+        price_cols = [c for c in price_cols if c not in use_ffill_for]
+
+    if interpolate_prices and price_cols:
+        reindexed[price_cols] = reindexed[price_cols].interpolate(
+            method="linear", limit_direction="both"
+        )
     # compute remaining nans
     remaining_nans = {c: int(reindexed[c].isna().sum()) for c in reindexed.columns}
 
